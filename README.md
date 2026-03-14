@@ -10,7 +10,7 @@ backend when Gemini is using Google login.
 ```text
 Project: gemini-cli-usage
 Auth: Google login
-  Quota summary         3.5% used  gemini-2.5-pro  resets 19h38m
+  gemini-2.5-pro        3.5% used  resets 19h38m
   gemini-2.5-flash-lite 0.07% used  resets 19h37m
 ```
 

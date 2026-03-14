@@ -435,17 +435,12 @@ def _print_status(data: dict):
 
     quota = data.get("account_quota")
     if quota:
-        summary_bucket = quota.get("summary_bucket")
-        summary_label = "Quota summary"
-        if summary_bucket and summary_bucket.get("model"):
-            summary_label = f"Quota summary ({summary_bucket['model']})"
-
         bucket_names = [
             (bucket.get("model") or "unknown")
             for bucket in quota.get("buckets", [])
             if isinstance(bucket, dict)
         ]
-        name_width = max([len(summary_label), *map(len, bucket_names)])
+        name_width = max(map(len, bucket_names), default=len("Quota"))
 
         def print_bucket_line(label: str, bucket: dict):
             reset_time = _format_duration_until(bucket.get("reset_time"))
@@ -462,15 +457,7 @@ def _print_status(data: dict):
                 f"{remain_part}{dim}{reset_part}{reset}"
             )
 
-        if summary_bucket:
-            print_bucket_line(summary_label, summary_bucket)
-
-        extra_buckets = [
-            bucket
-            for bucket in quota.get("buckets", [])
-            if bucket is not summary_bucket
-        ]
-        for bucket in extra_buckets:
+        for bucket in quota.get("buckets", []):
             model = bucket.get("model") or "unknown"
             print_bucket_line(model, bucket)
     elif data.get("quota_error"):
