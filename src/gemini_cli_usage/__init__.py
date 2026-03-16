@@ -53,6 +53,14 @@ AUTH_LABELS = {
 OAUTH_CLIENT_ID_PATTERN = re.compile(r"const OAUTH_CLIENT_ID = '([^']+)';")
 OAUTH_CLIENT_SECRET_PATTERN = re.compile(r"const OAUTH_CLIENT_SECRET = '([^']+)';")
 
+# ANSI color codes — disabled when stdout is not a terminal (e.g. piped or redirected).
+_TTY = sys.stdout.isatty()
+_RED = "\033[0;31m" if _TTY else ""
+_YELLOW = "\033[0;33m" if _TTY else ""
+_GREEN = "\033[0;32m" if _TTY else ""
+_DIM = "\033[0;90m" if _TTY else ""
+_RESET = "\033[0m" if _TTY else ""
+
 
 def _read_json(path: Path) -> dict | list | None:
     try:
@@ -409,12 +417,8 @@ def _color_pct(pct: float | int | None) -> str:
     if pct is None:
         return "?"
     p = float(pct)
-    red = "\033[0;31m"
-    yellow = "\033[0;33m"
-    green = "\033[0;32m"
-    reset = "\033[0m"
-    color = red if p >= 70 else yellow if p >= 40 else green
-    return f"{color}{_format_pct(p)}{reset}"
+    color = _RED if p >= 70 else _YELLOW if p >= 40 else _GREEN
+    return f"{color}{_format_pct(p)}{_RESET}"
 
 
 def _format_pct(pct: float | int | None) -> str:
@@ -427,9 +431,6 @@ def _format_pct(pct: float | int | None) -> str:
 
 
 def _print_status(data: dict):
-    dim = "\033[0;90m"
-    reset = "\033[0m"
-
     print(f"Project: {Path(data['project_root']).name}")
     print(f"Auth: {data.get('auth_label', 'unknown')}")
 
@@ -454,14 +455,14 @@ def _print_status(data: dict):
             )
             print(
                 f"  {label:{name_width}s} {_color_pct(bucket.get('used_pct'))} used"
-                f"{remain_part}{dim}{reset_part}{reset}"
+                f"{remain_part}{_DIM}{reset_part}{_RESET}"
             )
 
         for bucket in quota.get("buckets", []):
             model = bucket.get("model") or "unknown"
             print_bucket_line(model, bucket)
     elif data.get("quota_error"):
-        print(f"  {'Quota':20s} {dim}{data['quota_error']}{reset}")
+        print(f"  {'Quota':20s} {_DIM}{data['quota_error']}{_RESET}")
 
 
 def _statusline_text(data: dict) -> str:
@@ -520,7 +521,8 @@ def cmd_json(args):
 
 def cmd_daemon(args):
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     root = Path(args.root).resolve() if args.root else None
     usage_file = get_usage_file()
