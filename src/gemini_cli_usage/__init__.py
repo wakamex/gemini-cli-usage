@@ -190,7 +190,10 @@ def _write_oauth_credentials(creds: dict):
 
 
 def _get_gemini_cli_oauth2_path() -> Path | None:
-    oauth2_rel = Path("node_modules") / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js"
+    oauth2_rels = [
+        Path("node_modules") / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js",
+        Path("node_modules") / "@google" / "gemini-cli" / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js",
+    ]
 
     candidates: list[Path] = []
 
@@ -228,12 +231,13 @@ def _get_gemini_cli_oauth2_path() -> Path | None:
                     candidates.append(p)
 
     for root in candidates:
-        oauth2_path = root / oauth2_rel
-        if oauth2_path.exists():
-            return oauth2_path
-        oauth2_path = root / "lib" / oauth2_rel
-        if oauth2_path.exists():
-            return oauth2_path
+        for oauth2_rel in oauth2_rels:
+            oauth2_path = root / oauth2_rel
+            if oauth2_path.exists():
+                return oauth2_path
+            oauth2_path = root / "lib" / oauth2_rel
+            if oauth2_path.exists():
+                return oauth2_path
 
     return None
 
