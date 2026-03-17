@@ -195,9 +195,50 @@ def _get_gemini_cli_oauth2_path() -> Path | None:
         return None
 
     resolved = Path(gemini_bin).resolve()
-    package_root = resolved.parent.parent
-    oauth2_path = package_root / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js"
-    return oauth2_path if oauth2_path.exists() else None
+
+    # Walk up from the binary looking for the oauth2.js file
+    # Handles npm global installs, fnm shims, nvm, volta, etc.
+    candidates = [resolved.parent.parent]  # standard: bin/../lib/node_modules/...
+
+    # On Windows, .cmd shims point elsewhere — try reading the shim to find the real path
+    if sys.platform == "win32" and resolved.suffix.lower() in (".cmd", ".ps1"):
+        try:
+            shim_text = resolved.read_text(errors="ignore")
+            # fnm/npm .cmd shims contain the real node_modules path
+            import re
+            for m in re.finditer(r'["\']?([A-Za-z]:[^"\';\n]+node_modules[^"\';\n]*)', shim_text):
+                nm_path = Path(m.group(1).strip().strip('"').strip("'"))
+                if nm_path.exists():
+                    # Go up to the parent of node_modules
+                    idx = str(nm_path).lower().find("node_modules")
+                    if idx > 0:
+                        candidates.append(Path(str(nm_path)[:idx]))
+        except OSError:
+            pass
+
+    # Also check npm global prefix
+    if sys.platform == "win32":
+        try:
+            import subprocess
+            npm_prefix = subprocess.run(
+                ["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5
+            )
+            if npm_prefix.returncode == 0:
+                candidates.append(Path(npm_prefix.stdout.strip()))
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            pass
+
+    oauth2_rel = Path("node_modules") / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js"
+    for root in candidates:
+        oauth2_path = root / oauth2_rel
+        if oauth2_path.exists():
+            return oauth2_path
+        # Also check lib/ subdirectory (common on Unix global installs)
+        oauth2_path = root / "lib" / oauth2_rel
+        if oauth2_path.exists():
+            return oauth2_path
+
+    return None
 
 
 def _get_gemini_cli_oauth_client_credentials() -> tuple[str, str] | None:
