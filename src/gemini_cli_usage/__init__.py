@@ -190,50 +190,47 @@ def _write_oauth_credentials(creds: dict):
 
 
 def _get_gemini_cli_oauth2_path() -> Path | None:
-    gemini_bin = shutil.which("gemini")
-    if not gemini_bin:
-        return None
-
-    resolved = Path(gemini_bin).resolve()
-
-    # Walk up from the binary looking for the oauth2.js file
-    # Handles npm global installs, fnm shims, nvm, volta, etc.
-    candidates = [resolved.parent, resolved.parent.parent]  # shim dir, or bin/../lib/
-
-    # On Windows, .cmd shims point elsewhere — try reading the shim to find the real path
-    if sys.platform == "win32" and resolved.suffix.lower() in (".cmd", ".ps1"):
-        try:
-            shim_text = resolved.read_text(errors="ignore")
-            # fnm/npm .cmd shims contain the real node_modules path
-            import re
-            for m in re.finditer(r'["\']?([A-Za-z]:[^"\';\n]+node_modules[^"\';\n]*)', shim_text):
-                nm_path = Path(m.group(1).strip().strip('"').strip("'"))
-                if nm_path.exists():
-                    # Go up to the parent of node_modules
-                    idx = str(nm_path).lower().find("node_modules")
-                    if idx > 0:
-                        candidates.append(Path(str(nm_path)[:idx]))
-        except OSError:
-            pass
-
-    # Also check npm global prefix
-    if sys.platform == "win32":
-        try:
-            import subprocess
-            npm_prefix = subprocess.run(
-                ["npm", "prefix", "-g"], capture_output=True, text=True, timeout=5
-            )
-            if npm_prefix.returncode == 0:
-                candidates.append(Path(npm_prefix.stdout.strip()))
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-            pass
-
     oauth2_rel = Path("node_modules") / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js"
+
+    candidates: list[Path] = []
+
+    # 1. Try shutil.which
+    gemini_bin = shutil.which("gemini")
+    if gemini_bin:
+        resolved = Path(gemini_bin).resolve()
+        candidates.extend([resolved.parent, resolved.parent.parent])
+
+    # 2. On Windows, scan fnm node version directories
+    if sys.platform == "win32":
+        fnm_dir = Path.home() / "AppData" / "Roaming" / "fnm" / "node-versions"
+        if fnm_dir.exists():
+            for version_dir in fnm_dir.iterdir():
+                candidates.append(version_dir / "installation")
+
+        # Also check AppData/Local fnm multishells
+        fnm_multi = Path.home() / "AppData" / "Local" / "fnm_multishells"
+        if fnm_multi.exists():
+            for shell_dir in fnm_multi.iterdir():
+                candidates.append(shell_dir)
+
+    # 3. Unix: check common global npm/nvm paths
+    else:
+        for p in [
+            Path("/usr/lib"),
+            Path("/usr/local/lib"),
+            Path.home() / ".nvm" / "versions",
+        ]:
+            if p.exists():
+                if "nvm" in str(p):
+                    for v in p.rglob("node"):
+                        candidates.append(v / "lib")
+                else:
+                    candidates.append(p)
+
     for root in candidates:
         oauth2_path = root / oauth2_rel
         if oauth2_path.exists():
             return oauth2_path
-        # Also check lib/ subdirectory (common on Unix global installs)
         oauth2_path = root / "lib" / oauth2_rel
         if oauth2_path.exists():
             return oauth2_path
