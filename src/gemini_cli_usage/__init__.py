@@ -198,7 +198,7 @@ def _get_gemini_cli_oauth2_path() -> Path | None:
 
     # Walk up from the binary looking for the oauth2.js file
     # Handles npm global installs, fnm shims, nvm, volta, etc.
-    candidates = [resolved.parent.parent]  # standard: bin/../lib/node_modules/...
+    candidates = [resolved.parent, resolved.parent.parent]  # shim dir, or bin/../lib/
 
     # On Windows, .cmd shims point elsewhere — try reading the shim to find the real path
     if sys.platform == "win32" and resolved.suffix.lower() in (".cmd", ".ps1"):
