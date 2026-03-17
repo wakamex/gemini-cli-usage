@@ -30,10 +30,56 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-GEMINI_DIR = Path.home() / ".gemini"
-OAUTH_FILE = GEMINI_DIR / "oauth_creds.json"
-SETTINGS_FILE = GEMINI_DIR / "settings.json"
-DEFAULT_USAGE_FILE = GEMINI_DIR / "usage-limits.json"
+_NATIVE_GEMINI_DIR = Path.home() / ".gemini"
+
+
+def _wsl_gemini_dirs() -> list[Path]:
+    """Return candidate .gemini dirs from WSL distros (Windows only)."""
+    if sys.platform != "win32":
+        return []
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["wsl", "-l", "-q"],
+            capture_output=True,
+            timeout=5,
+        )
+        raw = result.stdout.decode("utf-16-le", errors="replace")
+        distros = [d.strip() for d in raw.splitlines() if d.strip()]
+    except Exception:
+        return []
+
+    dirs: list[Path] = []
+    for distro in distros:
+        wsl_home = Path(f"//wsl$/{distro}/home")
+        try:
+            if wsl_home.is_dir():
+                for user_dir in wsl_home.iterdir():
+                    candidate = user_dir / ".gemini"
+                    if candidate.is_dir():
+                        dirs.append(candidate)
+        except OSError:
+            continue
+    return dirs
+
+
+def _find_gemini_file(filename: str) -> Path:
+    """Return the first existing .gemini/<filename> from native + WSL paths."""
+    native = _NATIVE_GEMINI_DIR / filename
+    if native.exists():
+        return native
+    for wsl_dir in _wsl_gemini_dirs():
+        candidate = wsl_dir / filename
+        if candidate.exists():
+            return candidate
+    return native  # default even if missing
+
+
+GEMINI_DIR = _NATIVE_GEMINI_DIR
+OAUTH_FILE = _find_gemini_file("oauth_creds.json")
+SETTINGS_FILE = _find_gemini_file("settings.json")
+DEFAULT_USAGE_FILE = _find_gemini_file("usage-limits.json")
 
 DAEMON_INTERVAL = 300  # 5 minutes
 CACHE_MAX_AGE = 300
