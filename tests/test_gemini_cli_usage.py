@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -265,6 +266,131 @@ class GeminiUsageTests(unittest.TestCase):
 
         self.assertIn("GEMINI_OAUTH_CLIENT_ID", str(exc.exception))
         self.assertIn("run `gemini`", str(exc.exception))
+
+    def test_write_oauth_credentials_is_atomic_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oauth_file = Path(tmp) / "oauth_creds.json"
+            with mock.patch.object(gemini_cli_usage, "OAUTH_FILE", oauth_file):
+                written = gemini_cli_usage._write_oauth_credentials(
+                    {"access_token": "token", "refresh_token": "refresh"}
+                )
+
+            self.assertEqual(json.loads(oauth_file.read_text()), written)
+            self.assertEqual(oauth_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(oauth_file.parent.glob(".oauth_creds.json.*")), [])
+
+    def test_refresh_does_not_overwrite_concurrently_rotated_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oauth_file = Path(tmp) / "oauth_creds.json"
+            original = {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "expiry_date": 0,
+            }
+            rotated = {
+                "access_token": "other-access",
+                "refresh_token": "other-refresh",
+                "expiry_date": 9_999_999_999_999,
+            }
+            _write_json(oauth_file, original)
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    _write_json(oauth_file, rotated)
+                    return json.dumps(
+                        {"access_token": "our-access", "refresh_token": "our-refresh"}
+                    ).encode()
+
+            with (
+                mock.patch.object(gemini_cli_usage, "OAUTH_FILE", oauth_file),
+                mock.patch.object(
+                    gemini_cli_usage,
+                    "_get_oauth_client_credentials",
+                    return_value=("client", "secret"),
+                ),
+                mock.patch.object(
+                    gemini_cli_usage.urllib.request,
+                    "urlopen",
+                    return_value=FakeResponse(),
+                ),
+            ):
+                result = gemini_cli_usage.refresh_access_token(original)
+
+            self.assertEqual(result, rotated)
+            self.assertEqual(json.loads(oauth_file.read_text()), rotated)
+
+    def test_rejected_token_uses_concurrently_replaced_access_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            oauth_file = Path(tmp) / "oauth_creds.json"
+            _write_json(
+                oauth_file,
+                {
+                    "access_token": "replacement",
+                    "refresh_token": "refresh",
+                    "expiry_date": 9_999_999_999_999,
+                },
+            )
+            with (
+                mock.patch.object(gemini_cli_usage, "OAUTH_FILE", oauth_file),
+                mock.patch.object(
+                    gemini_cli_usage, "refresh_access_token"
+                ) as refresh_mock,
+            ):
+                token = gemini_cli_usage.get_access_token(
+                    force_refresh=True, rejected_token="rejected"
+                )
+
+            self.assertEqual(token, "replacement")
+            refresh_mock.assert_not_called()
+
+    def test_fetch_quota_recovers_once_from_auth_error(self):
+        auth_error = urllib.error.HTTPError(
+            url="https://cloudcode-pa.googleapis.com",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=None,
+        )
+        with (
+            mock.patch.object(
+                gemini_cli_usage,
+                "get_auth_type",
+                return_value="oauth-personal",
+            ),
+            mock.patch.object(
+                gemini_cli_usage,
+                "get_access_token",
+                side_effect=["stale", "fresh"],
+            ) as token_mock,
+            mock.patch.object(
+                gemini_cli_usage,
+                "_load_code_assist",
+                side_effect=[
+                    auth_error,
+                    {"cloudaicompanionProject": "project"},
+                ],
+            ),
+            mock.patch.object(
+                gemini_cli_usage,
+                "_code_assist_post",
+                return_value={"buckets": []},
+            ),
+        ):
+            quota = gemini_cli_usage.fetch_quota()
+
+        self.assertEqual(quota["project_id"], "project")
+        token_mock.assert_has_calls(
+            [
+                mock.call(),
+                mock.call(force_refresh=True, rejected_token="stale"),
+            ]
+        )
 
 
 if __name__ == "__main__":

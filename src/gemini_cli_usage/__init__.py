@@ -23,6 +23,7 @@ import re
 import signal
 import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -181,12 +182,35 @@ def get_oauth_credentials() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _write_oauth_credentials(creds: dict):
+def _write_oauth_credentials(
+    creds: dict, expected_refresh_token: str | None = None
+) -> dict:
+    latest = get_oauth_credentials()
+    if expected_refresh_token and latest:
+        latest_refresh_token = latest.get("refresh_token")
+        if latest_refresh_token and latest_refresh_token != expected_refresh_token:
+            return latest
+        creds = {**latest, **creds}
+
+    tmp: Path | None = None
     try:
-        OAUTH_FILE.write_text(json.dumps(creds, indent=2) + "\n")
+        OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{OAUTH_FILE.name}.", dir=OAUTH_FILE.parent
+        )
+        tmp = Path(tmp_name)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as file:
+            file.write(json.dumps(creds, indent=2) + "\n")
+        os.replace(tmp, OAUTH_FILE)
     except OSError:
         # Best effort only; the refreshed token can still be used in-memory.
-        pass
+        if tmp:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return creds
 
 
 def _get_gemini_cli_oauth2_path() -> Path | None:
@@ -304,8 +328,16 @@ def refresh_access_token(creds: dict) -> dict:
         data=payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        latest = get_oauth_credentials()
+        if exc.code in (400, 401) and latest:
+            latest_refresh_token = latest.get("refresh_token")
+            if latest_refresh_token and latest_refresh_token != refresh_token:
+                return latest
+        raise
 
     updated = dict(creds)
     updated["access_token"] = result["access_token"]
@@ -316,17 +348,27 @@ def refresh_access_token(creds: dict) -> dict:
         updated["id_token"] = result["id_token"]
     if result.get("refresh_token"):
         updated["refresh_token"] = result["refresh_token"]
-    _write_oauth_credentials(updated)
-    return updated
+    return _write_oauth_credentials(updated, expected_refresh_token=refresh_token)
 
 
-def get_access_token() -> str:
+def get_access_token(
+    force_refresh: bool = False, rejected_token: str | None = None
+) -> str:
     creds = get_oauth_credentials()
     if not creds:
         raise RuntimeError("No OAuth credentials at ~/.gemini/oauth_creds.json")
 
+    token = creds.get("access_token")
+    token_was_replaced = (
+        rejected_token is not None
+        and isinstance(token, str)
+        and bool(token)
+        and token != rejected_token
+    )
     expiry_date = int(creds.get("expiry_date", 0) or 0)
-    if time.time() * 1000 >= expiry_date - 60_000:
+    if not token_was_replaced and (
+        force_refresh or time.time() * 1000 >= expiry_date - 60_000
+    ):
         creds = refresh_access_token(creds)
 
     token = creds.get("access_token")
@@ -426,32 +468,41 @@ def fetch_quota(project_root: Path | None = None) -> dict:
         )
 
     access_token = get_access_token()
-    load_res = _load_code_assist(access_token)
+    for attempt in range(2):
+        try:
+            load_res = _load_code_assist(access_token)
+            env_project = (
+                os.environ.get("GOOGLE_CLOUD_PROJECT")
+                or os.environ.get("GOOGLE_CLOUD_PROJECT_ID")
+                or None
+            )
+            project_id = load_res.get("cloudaicompanionProject") or env_project
+            if not project_id:
+                raise RuntimeError(
+                    "No Code Assist project ID available. Set GOOGLE_CLOUD_PROJECT if your account requires it."
+                )
 
-    env_project = (
-        os.environ.get("GOOGLE_CLOUD_PROJECT")
-        or os.environ.get("GOOGLE_CLOUD_PROJECT_ID")
-        or None
-    )
-    project_id = load_res.get("cloudaicompanionProject") or env_project
-    if not project_id:
-        raise RuntimeError(
-            "No Code Assist project ID available. Set GOOGLE_CLOUD_PROJECT if your account requires it."
-        )
-
-    quota_res = _code_assist_post(
-        "retrieveUserQuota", {"project": project_id}, access_token
-    )
-    current_tier = load_res.get("currentTier") or {}
-    paid_tier = load_res.get("paidTier") or {}
-    result = {
-        "project_id": project_id,
-        "user_tier": paid_tier.get("id") or current_tier.get("id"),
-        "user_tier_name": paid_tier.get("name") or current_tier.get("name"),
-        "buckets": _parse_quota_buckets(quota_res.get("buckets") or []),
-    }
-    result["summary_bucket"] = _select_summary_bucket(result)
-    return result
+            quota_res = _code_assist_post(
+                "retrieveUserQuota", {"project": project_id}, access_token
+            )
+            current_tier = load_res.get("currentTier") or {}
+            paid_tier = load_res.get("paidTier") or {}
+            result = {
+                "project_id": project_id,
+                "user_tier": paid_tier.get("id") or current_tier.get("id"),
+                "user_tier_name": paid_tier.get("name") or current_tier.get("name"),
+                "buckets": _parse_quota_buckets(quota_res.get("buckets") or []),
+            }
+            result["summary_bucket"] = _select_summary_bucket(result)
+            return result
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and attempt == 0:
+                access_token = get_access_token(
+                    force_refresh=True, rejected_token=access_token
+                )
+                continue
+            raise
+    raise RuntimeError("Failed to fetch quota after token refresh")
 
 
 def build_usage_json(project_root: Path | None = None) -> dict:
