@@ -31,7 +31,12 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-_NATIVE_GEMINI_DIR = Path.home() / ".gemini"
+def _gemini_dir() -> Path:
+    home = os.environ.get("GEMINI_CLI_HOME")
+    return (Path(home) if home else Path.home()) / ".gemini"
+
+
+_NATIVE_GEMINI_DIR = _gemini_dir()
 
 
 def _wsl_gemini_dirs() -> list[Path]:
@@ -68,7 +73,7 @@ def _wsl_gemini_dirs() -> list[Path]:
 def _find_gemini_file(filename: str) -> Path:
     """Return the first existing .gemini/<filename> from native + WSL paths."""
     native = _NATIVE_GEMINI_DIR / filename
-    if native.exists():
+    if native.exists() or os.environ.get("GEMINI_CLI_HOME"):
         return native
     for wsl_dir in _wsl_gemini_dirs():
         candidate = wsl_dir / filename
@@ -311,7 +316,7 @@ def _get_oauth_client_credentials(creds: dict | None = None) -> tuple[str, str]:
 def refresh_access_token(creds: dict) -> dict:
     refresh_token = creds.get("refresh_token")
     if not refresh_token:
-        raise RuntimeError("No refresh token in ~/.gemini/oauth_creds.json")
+        raise RuntimeError(f"No refresh token in {OAUTH_FILE}")
 
     client_id, client_secret = _get_oauth_client_credentials(creds)
     payload = urllib.parse.urlencode(
@@ -356,7 +361,7 @@ def get_access_token(
 ) -> str:
     creds = get_oauth_credentials()
     if not creds:
-        raise RuntimeError("No OAuth credentials at ~/.gemini/oauth_creds.json")
+        raise RuntimeError(f"No OAuth credentials at {OAUTH_FILE}")
 
     token = creds.get("access_token")
     token_was_replaced = (
@@ -373,7 +378,7 @@ def get_access_token(
 
     token = creds.get("access_token")
     if not token:
-        raise RuntimeError("No access token in ~/.gemini/oauth_creds.json")
+        raise RuntimeError(f"No access token in {OAUTH_FILE}")
     return token
 
 

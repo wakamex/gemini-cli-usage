@@ -74,7 +74,8 @@ Google's internal Code Assist API:
 - `retrieveUserQuota`
 
 This tool mirrors that flow using the OAuth credentials in
-`~/.gemini/oauth_creds.json`.
+`~/.gemini/oauth_creds.json`. When `GEMINI_CLI_HOME` is set, it follows Gemini
+CLI and uses `$GEMINI_CLI_HOME/.gemini` instead.
 
 ## Notes
 
@@ -93,7 +94,8 @@ This tool mirrors that flow using the OAuth credentials in
   `remainingAmount` and a usable fraction. Otherwise the tool reports `% used`
   plus reset time.
 - Auth detection follows Gemini CLI precedence: environment variables first,
-  then workspace `.gemini/settings.json`, then global `~/.gemini/settings.json`.
+  then workspace `.gemini/settings.json`, then the global settings file under
+  the effective Gemini CLI home.
 
 ## Options
 

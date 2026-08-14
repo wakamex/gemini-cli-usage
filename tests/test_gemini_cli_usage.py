@@ -37,6 +37,12 @@ def _usage_payload(project_root: Path, updated_at: str) -> dict:
 
 
 class GeminiUsageTests(unittest.TestCase):
+    def test_gemini_cli_home_sets_global_gemini_directory(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"GEMINI_CLI_HOME": tmp}, clear=True
+        ):
+            self.assertEqual(gemini_cli_usage._gemini_dir(), Path(tmp) / ".gemini")
+
     def test_env_auth_overrides_workspace_and_global_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
