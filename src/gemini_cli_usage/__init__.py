@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -126,12 +127,13 @@ def _iso_now() -> str:
 
 
 def _parse_iso(timestamp: str | None) -> datetime | None:
-    if not timestamp:
+    if not isinstance(timestamp, str) or not timestamp:
         return None
     try:
-        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _read_auth_type_from_settings(path: Path) -> str | None:
@@ -420,13 +422,37 @@ def _load_code_assist(access_token: str) -> dict:
     )
 
 
-def _parse_quota_buckets(buckets: list[dict]) -> list[dict]:
+def _parse_quota_buckets(buckets: object) -> list[dict]:
+    if not isinstance(buckets, list):
+        raise RuntimeError("Invalid quota response")
+
     parsed = []
     for bucket in buckets:
+        if not isinstance(bucket, dict):
+            raise RuntimeError("Invalid quota response")
+
         remaining = None
         limit = None
-        used_pct = None
+        model = bucket.get("modelId")
         remaining_fraction = bucket.get("remainingFraction")
+        reset_time = bucket.get("resetTime")
+
+        if model is None or model == "" or remaining_fraction is None:
+            continue
+
+        if (
+            not isinstance(model, str)
+            or not model.strip()
+            or not isinstance(remaining_fraction, int | float)
+            or isinstance(remaining_fraction, bool)
+            or (
+                isinstance(remaining_fraction, float)
+                and not math.isfinite(remaining_fraction)
+            )
+            or not 0 <= remaining_fraction <= 1
+            or (reset_time is not None and _parse_iso(reset_time) is None)
+        ):
+            raise RuntimeError("Invalid quota response")
 
         try:
             if bucket.get("remainingAmount") is not None:
@@ -434,20 +460,18 @@ def _parse_quota_buckets(buckets: list[dict]) -> list[dict]:
         except (TypeError, ValueError):
             remaining = None
 
-        if isinstance(remaining_fraction, int | float):
-            used_pct = (1 - float(remaining_fraction)) * 100
-        if remaining is not None and isinstance(remaining_fraction, int | float):
-            if remaining_fraction > 0:
-                limit = round(remaining / float(remaining_fraction))
+        used_pct = (1 - float(remaining_fraction)) * 100
+        if remaining is not None and remaining_fraction > 0:
+            limit = round(remaining / float(remaining_fraction))
 
         parsed.append(
             {
-                "model": bucket.get("modelId"),
+                "model": model,
                 "remaining": remaining,
                 "limit": limit,
                 "used_pct": used_pct,
                 "remaining_fraction": remaining_fraction,
-                "reset_time": bucket.get("resetTime"),
+                "reset_time": reset_time,
                 "token_type": bucket.get("tokenType"),
             }
         )
@@ -490,13 +514,17 @@ def fetch_quota(project_root: Path | None = None) -> dict:
             quota_res = _code_assist_post(
                 "retrieveUserQuota", {"project": project_id}, access_token
             )
+            if not isinstance(quota_res, dict) or not isinstance(
+                quota_res.get("buckets"), list
+            ):
+                raise RuntimeError("Invalid quota response")
             current_tier = load_res.get("currentTier") or {}
             paid_tier = load_res.get("paidTier") or {}
             result = {
                 "project_id": project_id,
                 "user_tier": paid_tier.get("id") or current_tier.get("id"),
                 "user_tier_name": paid_tier.get("name") or current_tier.get("name"),
-                "buckets": _parse_quota_buckets(quota_res.get("buckets") or []),
+                "buckets": _parse_quota_buckets(quota_res["buckets"]),
             }
             result["summary_bucket"] = _select_summary_bucket(result)
             return result

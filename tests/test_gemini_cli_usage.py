@@ -123,6 +123,53 @@ class GeminiUsageTests(unittest.TestCase):
         self.assertIn("q:3.5%", statusline)
         self.assertNotIn("q:0.07%", statusline)
 
+    def test_fetch_quota_rejects_missing_buckets(self):
+        with (
+            mock.patch.object(
+                gemini_cli_usage, "get_auth_type", return_value="oauth-personal"
+            ),
+            mock.patch.object(
+                gemini_cli_usage, "get_access_token", return_value="token"
+            ),
+            mock.patch.object(
+                gemini_cli_usage,
+                "_load_code_assist",
+                return_value={"cloudaicompanionProject": "project"},
+            ),
+            mock.patch.object(gemini_cli_usage, "_code_assist_post", return_value={}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Invalid quota response"):
+                gemini_cli_usage.fetch_quota()
+
+    def test_quota_buckets_require_finite_fraction_and_valid_reset(self):
+        invalid_buckets = (
+            {"modelId": "model", "remainingFraction": float("nan")},
+            {"modelId": "model", "remainingFraction": float("inf")},
+            {"modelId": "model", "remainingFraction": 1.1},
+            {
+                "modelId": "model",
+                "remainingFraction": 0.5,
+                "resetTime": "not-a-timestamp",
+            },
+        )
+
+        for bucket in invalid_buckets:
+            with self.subTest(bucket=bucket), self.assertRaisesRegex(
+                RuntimeError, "Invalid quota response"
+            ):
+                gemini_cli_usage._parse_quota_buckets([bucket])
+
+    def test_quota_buckets_skip_incomplete_entries(self):
+        buckets = gemini_cli_usage._parse_quota_buckets(
+            [
+                {"remainingFraction": 0.5},
+                {"modelId": "missing-fraction"},
+                {"modelId": "valid-model", "remainingFraction": 0.25},
+            ]
+        )
+
+        self.assertEqual([bucket["model"] for bucket in buckets], ["valid-model"])
+
     def test_force_refresh_bypasses_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
